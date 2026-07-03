@@ -99,6 +99,20 @@
     border-radius:10px; width:min(320px,90vw); text-align:center; }
   #namedlg button { background:var(--green); color:#fff; border:none; border-radius:10px;
     padding:12px 28px; font-size:1rem; font-weight:600; cursor:pointer; }
+  #tray { padding:10px 12px 0; display:none; }
+  #tray .tray-label { font-size:.72rem; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--muted); margin:0 6px 6px; }
+  .chip {
+    display:inline-flex; align-items:center; gap:7px; background:#e9f5ec;
+    border:1.5px dashed #9ec7ab; color:var(--green-dark); border-radius:999px;
+    padding:7px 6px 7px 13px; margin:0 6px 6px 0; font-size:.92rem; cursor:pointer;
+    user-select:none; -webkit-user-select:none;
+  }
+  .chip .lbl { font-size:.7rem; color:var(--muted); }
+  .chip .snz {
+    border:none; background:#d3e8d9; color:var(--green-dark); border-radius:999px;
+    width:22px; height:22px; font-size:.8rem; line-height:1; cursor:pointer; padding:0;
+  }
 </style>
 </head>
 <body>
@@ -112,6 +126,11 @@
   <input id="qty" placeholder="qty">
   <button class="add-btn" type="submit" aria-label="Add">＋</button>
 </form>
+
+<div id="tray">
+  <div class="tray-label">Suggested — probably due</div>
+  <div id="chips"></div>
+</div>
 
 <main>
   <ul id="list"></ul>
@@ -169,7 +188,33 @@ function view() {
   return items;
 }
 
+function renderTray() {
+  const chips = $('chips');
+  chips.innerHTML = '';
+  const listed = new Set(view().map(i => canon(i.name)));
+  const pendingSnoozes = new Set(
+    queue.filter(o => o.type === 'snooze').map(o => o.catalog_id));
+  const sugg = (base.suggestions || []).filter(s =>
+    !listed.has(canon(s.name)) && !pendingSnoozes.has(s.catalog_id));
+  $('tray').style.display = sugg.length ? 'block' : 'none';
+  for (const s of sugg) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.innerHTML = `<span class="nm"></span><span class="lbl"></span>
+                      <button class="snz" aria-label="Snooze">✕</button>`;
+    chip.querySelector('.nm').textContent = '＋ ' + s.name;
+    chip.querySelector('.lbl').textContent = s.label;
+    chip.onclick = () => enqueue({ type:'add', name:s.name, qty_note:'', item_id:uuid() });
+    chip.querySelector('.snz').onclick = e => {
+      e.stopPropagation();
+      enqueue({ type:'snooze', catalog_id:s.catalog_id });
+    };
+    chips.appendChild(chip);
+  }
+}
+
 function render() {
+  renderTray();
   const items = view(), list = $('list');
   list.innerHTML = '';
   $('empty').hidden = items.length > 0;

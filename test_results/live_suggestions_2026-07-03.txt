@@ -1,0 +1,4 @@
+suggestion surfaced: {'catalog_id': 2, 'score': 0.86, 'median_days': 7.0, 'label': 'weekly', 'name': '_fixture_bananas'}
+snooze: {'snoozed_until': '2026-07-07T08:55:07+00:00'}
+snoozed suggestion hidden from state
+fixture cleaned; LIVE PHASE-1 TEST PASSED

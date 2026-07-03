@@ -103,8 +103,41 @@ def get_or_create_catalog(conn: sqlite3.Connection, name: str) -> int:
     return cur.lastrowid
 
 
-def state(conn: sqlite3.Connection) -> dict:
+def purchase_history(conn: sqlite3.Connection) -> dict[int, list[str]]:
+    """catalog_id -> ordered purchase timestamps (the cycle-estimator substrate)."""
+    hist: dict[int, list[str]] = {}
+    for r in conn.execute(
+        "SELECT catalog_id, bought_at FROM purchase_events ORDER BY bought_at"
+    ):
+        hist.setdefault(r["catalog_id"], []).append(r["bought_at"])
+    return hist
+
+
+def suggestions(conn: sqlite3.Connection, now) -> list[dict]:
+    """Due items (cycles.suggest) minus already-listed and snoozed catalog rows."""
+    import cycles
+
+    on_list = {r["catalog_id"] for r in conn.execute("SELECT catalog_id FROM items")}
+    now_iso = now.isoformat(timespec="seconds")
+    out = []
+    for s in cycles.suggest(purchase_history(conn), now):
+        if s["catalog_id"] in on_list:
+            continue
+        row = conn.execute(
+            "SELECT display_name, snoozed_until FROM item_catalog WHERE id=?",
+            (s["catalog_id"],),
+        ).fetchone()
+        if row["snoozed_until"] and row["snoozed_until"] > now_iso:
+            continue
+        out.append({**s, "name": row["display_name"]})
+    return out
+
+
+def state(conn: sqlite3.Connection, now=None) -> dict:
     """Full list state — small enough (tens of items) to always send whole."""
+    from datetime import datetime, timezone
+
+    now = now or datetime.now(timezone.utc)
     items = [
         dict(r)
         for r in conn.execute(
@@ -114,7 +147,11 @@ def state(conn: sqlite3.Connection) -> dict:
                ORDER BY COALESCE(c.category, 'zzz'), i.added_at"""
         )
     ]
-    return {"revision": get_revision(conn), "items": items}
+    return {
+        "revision": get_revision(conn),
+        "items": items,
+        "suggestions": suggestions(conn, now),
+    }
 
 
 def prune_applied_ops(conn: sqlite3.Connection, cutoff_iso: str) -> None:

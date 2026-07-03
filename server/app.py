@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import cycles
 import db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -47,7 +48,7 @@ def now_iso() -> str:
 
 class Op(BaseModel):
     op_id: str = Field(..., min_length=8, max_length=64)
-    type: Literal["add", "checkoff", "remove", "undo_checkoff"]
+    type: Literal["add", "checkoff", "remove", "undo_checkoff", "snooze"]
     actor: str = Field("", max_length=40)
     # add
     name: str | None = Field(None, max_length=120)
@@ -56,6 +57,8 @@ class Op(BaseModel):
     item_id: str | None = Field(None, min_length=8, max_length=64)
     # undo_checkoff: the op_id of the checkoff being undone
     target_op_id: str | None = Field(None, max_length=64)
+    # snooze (suggestion dismissal — server-side so it silences BOTH phones)
+    catalog_id: int | None = None
 
 
 async def broadcast_state() -> None:
@@ -141,11 +144,30 @@ def apply_undo_checkoff(op: Op, ts: str) -> dict:
     return {"item_id": item_id, "undone_event": target["event_id"]}
 
 
+def apply_snooze(op: Op, ts: str) -> dict:
+    """Dismiss a suggestion: snooze for ½ its median cycle (PLAN.md), min 2 days."""
+    if op.catalog_id is None:
+        raise HTTPException(422, "snooze requires catalog_id")
+    hist = db.purchase_history(conn).get(op.catalog_id, [])
+    half = (cycles.median_interval_days(hist) or 7.0) / 2
+    until = (datetime.fromisoformat(ts) + timedelta(days=max(half, 2.0))).isoformat(
+        timespec="seconds"
+    )
+    cur = conn.execute(
+        "UPDATE item_catalog SET snoozed_until=? WHERE id=?", (until, op.catalog_id)
+    )
+    if cur.rowcount == 0:
+        return {"noop": True}
+    db.bump_revision(conn)
+    return {"snoozed_until": until}
+
+
 APPLY = {
     "add": apply_add,
     "checkoff": apply_checkoff,
     "remove": apply_remove,
     "undo_checkoff": apply_undo_checkoff,
+    "snooze": apply_snooze,
 }
 
 

@@ -137,3 +137,36 @@ def test_websocket_broadcasts_after_op():
 def test_rejects_garbage():
     assert client.post("/api/op", json={"op_id": "x" * 10, "type": "add"}).status_code == 422
     assert client.post("/api/op", json={"op_id": "short", "type": "add", "name": "x"}).status_code == 422
+
+
+def test_suggestions_and_snooze_flow():
+    """Seed a weekly history via SQL, expect a suggestion; snooze hides it for both."""
+    from datetime import datetime, timedelta, timezone
+
+    cid = db.get_or_create_catalog(appmod.conn, "bananas")
+    t0 = datetime.now(timezone.utc) - timedelta(days=27)
+    for d in (0, 7, 14, 21):  # last buy 6 days ago → due score ~0.86
+        appmod.conn.execute(
+            "INSERT INTO purchase_events(catalog_id, bought_at) VALUES(?,?)",
+            (cid, (t0 + timedelta(days=d)).isoformat(timespec="seconds")),
+        )
+    appmod.conn.commit()
+
+    sugg = client.get("/api/state").json()["suggestions"]
+    mine = [s for s in sugg if s["catalog_id"] == cid]
+    assert mine and mine[0]["label"] == "weekly"
+
+    # adding it to the list removes the suggestion
+    iid = str(uuid.uuid4())
+    op(type="add", name="bananas", item_id=iid)
+    assert not [s for s in client.get("/api/state").json()["suggestions"]
+                if s["catalog_id"] == cid]
+    op(type="remove", item_id=iid)  # back off the list → suggestion returns
+    assert [s for s in client.get("/api/state").json()["suggestions"]
+            if s["catalog_id"] == cid]
+
+    # snooze silences it (server-side → both phones)
+    _, res = op(type="snooze", catalog_id=cid)
+    assert "snoozed_until" in res.json()["result"]
+    assert not [s for s in client.get("/api/state").json()["suggestions"]
+                if s["catalog_id"] == cid]
