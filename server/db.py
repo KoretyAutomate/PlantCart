@@ -96,6 +96,12 @@ def get_or_create_catalog(conn: sqlite3.Connection, name: str) -> int:
     ).fetchone()
     if row:
         return row["id"]
+    # alias match: typed "milk" / "たまご" must land on the 牛乳 / 卵 row
+    for r in conn.execute(
+        "SELECT id, aliases_json FROM item_catalog WHERE aliases_json != '[]'"
+    ):
+        if any(canonical(a) == canon for a in json.loads(r["aliases_json"])):
+            return r["id"]
     cur = conn.execute(
         "INSERT INTO item_catalog(canonical_name, display_name) VALUES(?, ?)",
         (canon, name.strip()),

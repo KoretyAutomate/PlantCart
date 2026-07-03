@@ -12,13 +12,16 @@ off-the-shelf app offers:
    (gut-microbiome guideline), and use the local DGX LLM to suggest recipes and
    new plants that diversify the diet.
 
-> Status: **approved by user 2026-07-03 — Phase 0 BUILT & verified** (11/11
-> contract tests + live two-client WS test; service live on :8123, backup timer
-> on). Wife's phone confirmed **iPhone**. Implementation deltas: item ids are
-> client-generated UUIDs (offline add→checkoff chains work in dead zones);
-> op queue lives in localStorage, not IndexedDB (page-JS-only, tiny payload).
-> Blocked on user: enable Tailscale Serve + HTTPS certs (see README §setup),
-> then the two-phone in-store test gates Phase 0 done.
+> Status: **approved 2026-07-03 — Phases 0, 1, 2 BUILT & live-verified same day**
+> (25/25 tests; live two-client WS test; live vLLM enrichment 3 s / ideas 10 s;
+> service on :8123 with linger + nightly backup timer). Wife's phone: **iPhone**.
+> Implementation deltas from plan: item ids are client-generated UUIDs (offline
+> add→checkoff chains work in dead zones); op queue in localStorage, not
+> IndexedDB (page-JS-only, tiny); recipes+diversity share one /api/ideas
+> endpoint (6 h cache); diversity post-filtered against 30-day eaten set (LLM
+> ignored "different" once in live test).
+> Blocked on user (Phase 3 gates): enable Tailscale Serve + HTTPS certs (README
+> §setup) → A2HS on both phones → two-phone in-store test → 1-week soak.
 
 ---
 

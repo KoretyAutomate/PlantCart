@@ -138,3 +138,28 @@ def test_ideas_filters_already_eaten_plants(monkeypatch):
     appmod.ideas_cache["data"] = None
     data = client.get("/api/ideas?refresh=1").json()
     assert [s["plant"] for s in data["diversity"]] == ["kohlrabi"]
+
+
+def test_curated_rows_are_never_alias_merged(monkeypatch):
+    """Regression (live 2026-07-03): sweep merged seeded ミニトマト into トマト.
+    Rows with curated category/aliases must survive an LLM alias_of verdict."""
+    tomato = db.get_or_create_catalog(appmod.conn, "トマト")
+    mini = db.get_or_create_catalog(appmod.conn, "ミニトマト")
+    appmod.conn.execute(
+        "UPDATE item_catalog SET category='produce', aliases_json=? WHERE id=?",
+        (json.dumps(["プチトマト"], ensure_ascii=False), mini))
+    appmod.conn.commit()
+    monkeypatch.setattr(llm, "chat_json", fake_llm(
+        {"category": "produce", "is_edible": True, "plants": ["tomato"],
+         "alias_of": db.canonical("トマト")}))
+    assert asyncio.run(catalog.enrich(appmod.conn, appmod.write_lock, mini))
+    # row survived, got enriched in place, and history was NOT repointed
+    row = appmod.conn.execute(
+        "SELECT plants_json, llm_enriched_at FROM item_catalog WHERE id=?", (mini,)).fetchone()
+    assert row is not None and json.loads(row["plants_json"]) == ["tomato"]
+    # bare user-typed variant still merges (the intended path)
+    variant = db.get_or_create_catalog(appmod.conn, "とまと")
+    appmod.conn.commit()
+    assert asyncio.run(catalog.enrich(appmod.conn, appmod.write_lock, variant))
+    assert appmod.conn.execute(
+        "SELECT COUNT(*) FROM item_catalog WHERE id=?", (variant,)).fetchone()[0] == 0

@@ -37,6 +37,18 @@
     display:flex; gap:8px; padding:12px 16px; background:var(--card);
     border-bottom:1px solid #e3e7e0; position:sticky; top:48px; z-index:9;
   }
+  #cands {
+    position:absolute; top:100%; left:12px; right:12px; background:var(--card);
+    border:1px solid #dde4dc; border-top:none; border-radius:0 0 14px 14px;
+    box-shadow:0 8px 18px #00000022; display:none; max-height:46vh; overflow-y:auto;
+  }
+  .cand {
+    display:flex; align-items:center; gap:10px; padding:12px 14px;
+    border-bottom:1px solid #f0f3ee; cursor:pointer; font-size:.98rem;
+  }
+  .cand:last-child { border-bottom:none; }
+  .cand:active { background:#eef5f0; }
+  .cand .cat-tag { margin-left:auto; color:var(--muted); font-size:.74rem; white-space:nowrap; }
   #name {
     flex:1; font-size:1rem; padding:10px 12px; border:1.5px solid #d4dcd4;
     border-radius:10px; outline:none; min-width:0;
@@ -152,6 +164,7 @@
   <input id="name" placeholder="Add item… (牛乳, apples, …)" enterkeyhint="done">
   <input id="qty" placeholder="qty">
   <button class="add-btn" type="submit" aria-label="Add">＋</button>
+  <div id="cands"></div>
 </form>
 
 <div id="tray">
@@ -215,6 +228,29 @@ const saveBase  = () => localStorage.setItem(LS.base, JSON.stringify(base));
 
 /* canonical() twin of server db.canonical — NFKC fold handles full-width JP */
 const canon = s => s.normalize('NFKC').toLowerCase().trim().replace(/\s+/g,' ');
+/* search fold: canon + katakana→hiragana, so ミルク matches typed みるく */
+const fold = s => canon(s).replace(/[ァ-ヶ]/g,
+  ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+
+/* category → [emoji, Japanese label] */
+const CATS = {
+  produce:['🥬','野菜・果物'], dairy:['🥛','乳製品・卵'], meat_fish:['🍖','肉・魚'],
+  pantry:['🥫','調味料・乾物'], bakery:['🍞','パン'], frozen:['🧊','冷凍'],
+  drinks:['🥤','飲料'], household:['🧻','日用品'], other:['📦','その他'],
+};
+const catEmoji = c => (CATS[c] || CATS.other)[0];
+const catLabel = c => c ? `${(CATS[c]||CATS.other)[0]} ${(CATS[c]||CATS.other)[1]}` : '📦 未分類';
+
+let catalog = JSON.parse(localStorage.getItem('pc_catalog') || '[]');
+async function loadCatalog() {
+  try {
+    const res = await fetch('/api/catalog');
+    if (res.ok) {
+      catalog = (await res.json()).catalog;
+      localStorage.setItem('pc_catalog', JSON.stringify(catalog));
+    }
+  } catch (e) { /* offline — cached copy stays */ }
+}
 
 /* ============ view = base + pending ops ============ */
 function view() {
@@ -223,7 +259,7 @@ function view() {
     if (op.type === 'add') {
       if (!items.some(i => canon(i.name) === canon(op.name)))
         items.push({ id:op.item_id, name:op.name, qty_note:op.qty_note||'',
-                     added_by:op.actor, category:null, pending:true });
+                     added_by:op.actor, category:op.cat||null, pending:true });
     } else if (op.type === 'checkoff' || op.type === 'remove') {
       items = items.filter(i => i.id !== op.item_id);
     }
@@ -268,7 +304,7 @@ function render() {
     const cat = it.category || 'other';
     if (cat !== lastCat && items.some(i => i.category)) {
       const h = document.createElement('div');
-      h.className = 'cat'; h.textContent = cat;
+      h.className = 'cat'; h.textContent = catLabel(it.category);
       list.appendChild(h); lastCat = cat;
     }
     const li = document.createElement('li');
@@ -276,7 +312,8 @@ function render() {
     li.dataset.id = it.id;
     li.innerHTML = `<span class="box"></span><span class="nm"></span>
                     <span class="qty"></span><span class="who"></span>`;
-    li.querySelector('.nm').textContent  = it.name;
+    li.querySelector('.nm').textContent =
+      (it.category ? catEmoji(it.category) + ' ' : '') + it.name;
     li.querySelector('.qty').textContent = it.qty_note || '';
     li.querySelector('.who').textContent = it.added_by || '';
     attachGestures(li, it);
@@ -333,8 +370,54 @@ $('add').addEventListener('submit', e => {
   if (!name) return;
   enqueue({ type:'add', name, qty_note:$('qty').value.trim(), item_id: uuid() });
   $('name').value = ''; $('qty').value = '';
+  hideCands();
   $('name').focus();
 });
+
+/* ============ typing candidates (seeded catalog + own history) ============ */
+const hideCands = () => $('cands').style.display = 'none';
+$('name').addEventListener('input', renderCands);
+$('name').addEventListener('focus', renderCands);
+document.addEventListener('pointerdown', e => {
+  if (!$('add').contains(e.target)) hideCands();
+});
+
+function renderCands() {
+  const q = fold($('name').value);
+  const box = $('cands');
+  if (!q) { hideCands(); return; }
+  const listed = new Set(view().map(i => canon(i.name)));
+  const hits = [];
+  for (const c of catalog) {                    // catalog arrives most-bought-first
+    if (listed.has(canon(c.name))) continue;
+    let rank = null;
+    for (const k of [c.name, ...(c.aliases || [])].map(fold)) {
+      if (k.startsWith(q)) { rank = 0; break; }
+      if (k.includes(q)) rank = 1;
+    }
+    if (rank !== null) hits.push([rank, c]);
+  }
+  hits.sort((a, b) => a[0] - b[0]);             // stable → buys order kept within rank
+  box.innerHTML = '';
+  for (const [, c] of hits.slice(0, 8)) {
+    const div = document.createElement('div');
+    div.className = 'cand';
+    div.innerHTML = '<span></span><span></span><span class="cat-tag"></span>';
+    div.children[0].textContent = catEmoji(c.category);
+    div.children[1].textContent = c.name;
+    div.children[2].textContent = c.category ? (CATS[c.category] || CATS.other)[1] : '';
+    div.addEventListener('pointerdown', e => {
+      e.preventDefault();                        // fires before blur → keyboard stays
+      enqueue({ type:'add', name:c.name, qty_note:$('qty').value.trim(),
+                item_id:uuid(), cat:c.category });
+      $('name').value = ''; $('qty').value = '';
+      hideCands();
+      $('name').focus();
+    });
+    box.appendChild(div);
+  }
+  box.style.display = box.children.length ? 'block' : 'none';
+}
 
 /* ============ toast ============ */
 let toastTimer = null;
@@ -380,6 +463,7 @@ async function flush() {
 async function resync() {
   const res = await fetch('/api/state');
   if (res.ok) { base = await res.json(); saveBase(); render(); }
+  loadCatalog();  // picks up new items + enrichment updates for candidates
 }
 
 /* ============ websocket (downstream-only) + reconnect ============ */
@@ -486,6 +570,7 @@ function boot() {
   render();       // instant paint from cached base (offline-first)
   connectWS();
   flush();
+  loadCatalog();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 }
 boot();

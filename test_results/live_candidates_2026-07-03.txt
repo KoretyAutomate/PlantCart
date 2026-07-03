@@ -1,0 +1,4 @@
+catalog: 173 entries; ミニトマト restored alongside トマト
+frequency ranking OK: bought items outrank seeds
+alias add: 'tofu' → 豆腐 (pantry) with instant category
+cleaned up; LIVE CANDIDATES TEST PASSED

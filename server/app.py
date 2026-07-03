@@ -228,6 +228,22 @@ async def get_state():
     return db.state(conn)
 
 
+@app.get("/api/catalog")
+async def get_catalog():
+    """Typing-candidate corpus: every known item, most-purchased first.
+    Client matches locally (instant, kana-folded); refreshed on boot/wake."""
+    rows = conn.execute(
+        """SELECT c.id, c.display_name AS name, c.category, c.aliases_json,
+                  (SELECT COUNT(*) FROM purchase_events e WHERE e.catalog_id=c.id) AS buys
+           FROM item_catalog c ORDER BY buys DESC, c.display_name"""
+    ).fetchall()
+    return {"catalog": [
+        {"name": r["name"], "category": r["category"],
+         "aliases": json.loads(r["aliases_json"])}
+        for r in rows
+    ]}
+
+
 IDEAS_TTL_H = 6
 ideas_cache: dict = {"data": None, "at": None}
 

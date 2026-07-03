@@ -47,19 +47,25 @@ def enrich_prompt(display_name: str, existing_names: list[str]) -> str:
         '"plants": [the DISTINCT edible plant species a typical serving contains, '
         'as lowercase English tokens, e.g. curry roux -> ["wheat","turmeric","cumin"], '
         'milk -> []], '
-        '"alias_of": if this item is THE SAME product as one existing catalog item '
-        '(spelling/script variant, e.g. たまねぎ vs 玉ねぎ), that exact string, else null}'
+        '"alias_of": ONLY if this item is the IDENTICAL product as one existing catalog '
+        'item written in a different script or spelling (e.g. たまねぎ vs 玉ねぎ), that '
+        'exact string. A related/similar/sub-type product is NOT an alias (ミニトマト is '
+        'NOT トマト; 冷凍ブロッコリー is NOT ブロッコリー). When unsure: null}'
     )
 
 
 async def enrich(conn, write_lock, catalog_id: int) -> bool:
     """Enrich one catalog row via the LLM. Returns True if state-visible change."""
     row = conn.execute(
-        "SELECT id, canonical_name, display_name FROM item_catalog WHERE id=?",
+        "SELECT id, canonical_name, display_name, category, aliases_json "
+        "FROM item_catalog WHERE id=?",
         (catalog_id,),
     ).fetchone()
     if row is None:
         return False
+    # curated rows (seeded: category/aliases pre-set) are authoritative distinct
+    # products — never merge them away; only bare user-typed variants may merge
+    mergeable = row["category"] is None and row["aliases_json"] == "[]"
     existing = [
         r["canonical_name"]
         for r in conn.execute(
@@ -79,7 +85,7 @@ async def enrich(conn, write_lock, catalog_id: int) -> bool:
 
     async with write_lock:
         target = None
-        if alias_of and alias_of != row["canonical_name"]:
+        if mergeable and alias_of and alias_of != row["canonical_name"]:
             target = conn.execute(
                 "SELECT id, aliases_json FROM item_catalog WHERE canonical_name=?",
                 (alias_of,),
