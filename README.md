@@ -13,7 +13,9 @@ See `PLAN.md` for the full architecture (agent-reviewed, approved 2026-07-03).
 
 ## Use it
 
-Open `http://100.112.171.54:8123` from any tailnet device. Enter your name once.
+Open **https://spark-d28c.tailae3b9b.ts.net** from any tailnet device (this is the
+URL to Add-to-Home-Screen; plain `http://100.112.171.54:8123` also works in a
+browser). Enter your name once.
 
 - **Tap an item** → bought (checked off + counted in purchase history). Undo toast for 8 s.
 - **Long-press** → remove *without* buying (doesn't pollute the frequency data).
@@ -22,14 +24,13 @@ Open `http://100.112.171.54:8123` from any tailnet device. Enter your name once.
 
 ## One-time setup still needed (user actions)
 
-1. **Enable Tailscale Serve** (for HTTPS, required for Add-to-Home-Screen):
-   visit https://login.tailscale.com/f/serve?node=nM83T3xSKT11CNTRL and approve,
-   also enable **HTTPS Certificates** under DNS in the admin console. Then run:
-   `tailscale serve --bg --https=443 http://100.112.171.54:8123`
-   → app becomes `https://spark-d28c.<tailnet>.ts.net`
+1. ~~Enable Tailscale Serve + HTTPS~~ **done 2026-07-03**:
+   `https://spark-d28c.tailae3b9b.ts.net` → proxy `100.112.171.54:8123`
+   (disable with `tailscale serve --https=443 off`).
 2. **Wife's iPhone**: install Tailscale from the App Store, sign in (invite her
-   or share your account), then open the https URL **in Safari** →
-   Share → *Add to Home Screen*.
+   or share your account), then open https://spark-d28c.tailae3b9b.ts.net
+   **in Safari** → Share → *Add to Home Screen*. Do the same on the Pixel
+   (Chrome → Install app).
 
 ## Ops
 
