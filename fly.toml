@@ -1,7 +1,8 @@
-# Fly.io config for PlantCart SaaS. Rename "plantcart" to your own app name.
-# Secrets (PLANTCART_SECRET, ANTHROPIC_API_KEY) are set via `fly secrets set`, NOT here.
-app = "plantcart"
-primary_region = "iad"
+# Fly.io config for PlantCart SaaS.
+# NOTE: `app` must be globally unique on Fly — deploy-fly.sh sets it for you, or
+# edit it here. Secrets (PLANTCART_SECRET, ANTHROPIC_API_KEY) go via `fly secrets set`.
+app = "plantcart-CHANGEME"
+primary_region = "nrt"   # Tokyo — closest to the user
 
 [build]
   dockerfile = "Dockerfile"
@@ -10,13 +11,17 @@ primary_region = "iad"
   PLANTCART_ENV = "production"
   PLANTCART_PORT = "8123"
   PLANTCART_DB = "/data/plantcart.db"
-  PLANTCART_LLM_PROVIDER = "anthropic"
+  # Start with LLM off → the only required secret is PLANTCART_SECRET, and the
+  # list + sync + recommendations all work. Flip to "anthropic" + set
+  # ANTHROPIC_API_KEY later to enable recipes/plant enrichment.
+  PLANTCART_LLM_PROVIDER = "none"
   PLANTCART_LLM_MODEL = "claude-haiku-4-5-20251001"
 
-# Persistent SQLite lives here. Create it once: `fly volumes create plantcart_data --size 1`
+# Persistent SQLite lives here. deploy-fly.sh creates the volume for you.
 [mounts]
   source = "plantcart_data"
   destination = "/data"
+  initial_size = "1gb"
 
 [http_service]
   internal_port = 8123
