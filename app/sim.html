@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#2f6f4f">
+<title>PlantCart — gesture simulator</title>
+<style>
+  :root { --green:#2f6f4f; --green-dark:#245840; --bg:#f6f7f4; --card:#fff;
+          --text:#1d2b23; --muted:#7a8a80; --amber:#c77b1e; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+         background:var(--bg); color:var(--text); padding-bottom:120px; }
+  header { background:var(--green); color:#fff; padding:12px 16px; position:sticky; top:0; z-index:5;
+           display:flex; align-items:center; gap:10px; }
+  header h1 { font-size:1.05rem; margin:0; flex:1; }
+  header a { color:#fff; font-size:.8rem; }
+  .modes { display:flex; gap:8px; padding:12px 14px 4px; }
+  .modes button { flex:1; padding:11px 8px; border-radius:12px; border:1.5px solid #d4dcd4;
+                  background:var(--card); font-size:.85rem; font-weight:600; cursor:pointer; }
+  .modes button.on { background:var(--green); color:#fff; border-color:var(--green); }
+  .hint { margin:8px 16px; font-size:.82rem; color:var(--muted); min-height:2.4em; }
+  ul { list-style:none; margin:6px 12px; padding:0; }
+  li.item { position:relative; overflow:hidden; border-radius:12px; margin-bottom:8px;
+            box-shadow:0 1px 2px #0000000a; user-select:none; -webkit-user-select:none;
+            touch-action:pan-y; }
+  li.item .under { position:absolute; inset:0; display:flex; align-items:center;
+                   font-weight:700; font-size:.95rem; opacity:0; padding:0 18px; }
+  li.item .under.right { background:#dff3e4; color:var(--green-dark); justify-content:flex-start; }
+  li.item .under.left  { background:#fdf3e3; color:var(--amber); justify-content:flex-end; }
+  li.item .row { position:relative; background:var(--card); border-radius:12px;
+                 display:flex; align-items:center; gap:12px; padding:15px 14px; }
+  li.item .box { width:22px; height:22px; border:2px solid #b9c6bc; border-radius:7px; flex-shrink:0; }
+  li.item .nm { flex:1; font-size:1.02rem; }
+  /* tap-zone mode: two halves revealed while pressed */
+  li.item .zones { position:absolute; inset:0; display:none; z-index:2; }
+  li.item.zoned .zones { display:flex; }
+  .zones .z { flex:1; display:flex; align-items:center; justify-content:center;
+              font-weight:700; font-size:.92rem; opacity:.95; }
+  .zones .zl { background:#dff3e4cc; color:var(--green-dark); border-radius:12px 0 0 12px; }
+  .zones .zr { background:#fdf3e3cc; color:var(--amber); border-radius:0 12px 12px 0; }
+  #log { position:fixed; left:0; right:0; bottom:0; background:#243b2f; color:#cfe8d6;
+         font:12px/1.5 ui-monospace,monospace; padding:10px 14px calc(10px + env(safe-area-inset-bottom));
+         max-height:110px; overflow-y:auto; }
+  #log b { color:#8ee6a1; }
+  #counts { margin:10px 16px; font-size:.9rem; font-weight:600; }
+  #counts .b { color:var(--green-dark); } #counts .s { color:var(--amber); }
+  .reset { margin:4px 16px 0; background:none; border:none; color:var(--muted);
+           text-decoration:underline; font-size:.82rem; cursor:pointer; padding:0; }
+</style>
+</head>
+<body>
+<header><h1>🧪 Gesture simulator</h1><a href="/">← back to the real list</a></header>
+
+<div class="modes">
+  <button id="m-swipe" class="on">A · Swipe ←/→</button>
+  <button id="m-zones">B · Tap-halves</button>
+</div>
+<div class="hint" id="hint"></div>
+<div id="counts">✓ bought: <span class="b" id="cb">0</span> · 🚫 skipped: <span class="s" id="cs">0</span>
+  <button class="reset" id="reset">reset items</button></div>
+
+<ul id="list"></ul>
+
+<div id="log"><b>debug</b> — gesture events appear here (helps me fix your left-swipe issue)</div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const ITEMS = ['🥛 Milk 牛乳','🥛 Eggs 卵','🥬 Spinach ほうれん草','🍞 Bread 食パン',
+               '🥫 Tofu 豆腐','🥬 Bananas バナナ'];
+let mode = 'swipe', bought = 0, skipped = 0;
+const logEl = $('log');
+function dbg(msg) {
+  const d = document.createElement('div');
+  d.textContent = msg;
+  logEl.appendChild(d);
+  while (logEl.children.length > 30) logEl.removeChild(logEl.children[1]);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+const HINTS = {
+  swipe: 'Mode A (current): drag a row RIGHT = ✓ bought, LEFT = 🚫 skip. Release past ~¼ width to commit; earlier springs back.',
+  zones: 'Mode B (proposal): press a row — it splits in two. Release on the LEFT half = ✓ bought, RIGHT half = 🚫 skip. Slide off and release outside to cancel.',
+};
+function setMode(m) {
+  mode = m;
+  $('m-swipe').className = m === 'swipe' ? 'on' : '';
+  $('m-zones').className = m === 'zones' ? 'on' : '';
+  $('hint').textContent = HINTS[m];
+  render();
+}
+$('m-swipe').onclick = () => setMode('swipe');
+$('m-zones').onclick = () => setMode('zones');
+$('reset').onclick = () => { live = [...ITEMS]; render(); };
+
+let live = [...ITEMS];
+function done(name, kind) {
+  if (kind === 'bought') { bought++; $('cb').textContent = bought; }
+  else { skipped++; $('cs').textContent = skipped; }
+  dbg(`${kind === 'bought' ? '✓ BOUGHT' : '🚫 SKIP'}: ${name}`);
+  live = live.filter(n => n !== name);
+  render();
+}
+
+function render() {
+  const ul = $('list');
+  ul.innerHTML = '';
+  for (const name of live) {
+    const li = document.createElement('li');
+    li.className = 'item';
+    li.innerHTML = `<div class="under"></div>
+      <div class="zones"><div class="z zl">✓ Bought</div><div class="z zr">Skip 🚫</div></div>
+      <div class="row"><span class="box"></span><span class="nm"></span></div>`;
+    li.querySelector('.nm').textContent = name;
+    (mode === 'swipe' ? swipeGestures : zoneGestures)(li, name);
+    ul.appendChild(li);
+  }
+  if (!live.length) ul.innerHTML = '<div class="hint">All done — tap “reset items”.</div>';
+}
+
+/* ── Mode A: directional swipe (identical logic to the real app) ── */
+function swipeGestures(li, name) {
+  let swiping = false, sx = 0, sy = 0, dx = 0;
+  const row = li.querySelector('.row'), under = li.querySelector('.under');
+  const THRESH = () => Math.max(72, li.offsetWidth * 0.28);
+  const springBack = () => {
+    row.style.transition = 'transform .15s'; row.style.transform = '';
+    under.style.opacity = 0;
+    setTimeout(() => row.style.transition = '', 160);
+  };
+  li.addEventListener('pointerdown', e => {
+    swiping = false; dx = 0; sx = e.clientX; sy = e.clientY;
+    dbg(`down @${e.clientX|0},${e.clientY|0} (${e.pointerType})`);
+  });
+  li.addEventListener('pointermove', e => {
+    dx = e.clientX - sx;
+    const dy = e.clientY - sy;
+    if (!swiping && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) {
+      swiping = true;
+      try { li.setPointerCapture(e.pointerId); } catch (_) {}
+      dbg(`swipe start dx=${dx|0}`);
+    }
+    if (swiping) {
+      row.style.transform = `translateX(${dx}px)`;
+      under.className = 'under ' + (dx > 0 ? 'right' : 'left');
+      under.textContent = dx > 0 ? '✓ Bought' : 'Skip 🚫';
+      under.style.opacity = Math.min(Math.abs(dx) / THRESH(), 1);
+    }
+  });
+  li.addEventListener('pointercancel', () => {
+    dbg(`CANCEL (browser stole the gesture) dx=${dx|0}`);
+    if (swiping) springBack(); swiping = false;
+  });
+  li.addEventListener('pointerup', () => {
+    if (!swiping) { dbg('up (no swipe)'); return; }
+    dbg(`up dx=${dx|0} thresh=${THRESH()|0}`);
+    if (dx > THRESH()) done(name, 'bought');
+    else if (dx < -THRESH()) done(name, 'skip');
+    else springBack();
+    swiping = false;
+  });
+  li.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+/* ── Mode B: press → halves appear → release on a half ── */
+function zoneGestures(li, name) {
+  let pressed = false;
+  const show = v => li.classList.toggle('zoned', v);
+  li.addEventListener('pointerdown', e => {
+    pressed = true; show(true);
+    try { li.setPointerCapture(e.pointerId); } catch (_) {}
+    dbg(`press ${name.split(' ')[1]}`);
+  });
+  li.addEventListener('pointerup', e => {
+    show(false);
+    if (!pressed) return;
+    pressed = false;
+    const r = li.getBoundingClientRect();
+    if (e.clientY < r.top - 30 || e.clientY > r.bottom + 30) { dbg('release outside — cancel'); return; }
+    const leftHalf = (e.clientX - r.left) < r.width / 2;
+    dbg(`release on ${leftHalf ? 'LEFT' : 'RIGHT'} half`);
+    done(name, leftHalf ? 'bought' : 'skip');
+  });
+  li.addEventListener('pointercancel', () => { pressed = false; show(false); dbg('CANCEL'); });
+  li.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+setMode('swipe');
+</script>
+</body>
+</html>
