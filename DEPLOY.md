@@ -1,113 +1,129 @@
-# Deploying PlantCart
+# Deploying PlantCart (service name: thincart)
 
-PlantCart is a single FastAPI process serving both the API and the PWA, backed by one
-SQLite file. All config is via environment variables (see `.env.example` / `server/config.py`).
-The DB schema auto-creates on first boot.
+PlantCart is a single FastAPI process serving the API and the PWA, backed by one
+SQLite file. All config is via environment variables (see `.env.example` /
+`server/config.py`). The schema auto-creates (and additively migrates) on boot.
 
-> **TLS is mandatory.** The web client is a PWA: service workers and secure auth cookies
-> only work over HTTPS. Never expose the app over plain HTTP beyond localhost. Every path
-> below terminates TLS (Fly/Render do it for you; on a VPS use Caddy or nginx).
+> **TLS is mandatory.** The web client is a PWA: service workers and secure auth
+> only work over HTTPS. Every path below terminates TLS.
 
-> **Scaling ceiling.** SQLite has a *single writer*. This app is designed to run as **one
-> instance**. Do not scale horizontally — concurrent writers will corrupt or lock the DB.
-> When you outgrow one machine, migrate to Postgres *before* adding instances.
+> **Scaling ceiling.** SQLite has a *single writer*. Run **one instance**. Do not
+> scale horizontally — migrate to Postgres *before* adding instances.
 
-Generate the JWT secret once (used in every path below):
-
-```bash
-python -c "import secrets;print(secrets.token_urlsafe(48))"
-```
+> **App name.** Fly app names are global, lowercase DNS labels. This deployment
+> uses **`thincart`** → `https://thincart.fly.dev`. Substitute your own unique
+> name everywhere `<app>` appears.
 
 ---
 
-## (a) Fly.io
+## (a) Fly.io — the supported path
 
-`fly.toml` is included; it sets `PLANTCART_ENV=production`, `PLANTCART_DB=/data/plantcart.db`,
-and mounts a `plantcart_data` volume there.
+Everything is driven by `./deploy-fly.sh <app>` (the name argument is REQUIRED):
 
 ```bash
-# 1. First time: create the app from fly.toml (skip if it already exists).
-fly launch --no-deploy --copy-config --name plantcart
-
-# 2. Create the persistent volume the mount expects (same region as the app).
-fly volumes create plantcart_data --size 1 --region iad
-
-# 3. Set secrets (never put these in fly.toml).
-fly secrets set PLANTCART_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"
-fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
-
-# 4. (optional) pin CORS to your web origin
-fly secrets set PLANTCART_CORS="https://plantcart.fly.dev"
-
-# 5. Deploy.
-fly deploy
-
-# 6. Verify.
-fly status
-curl -fsS https://plantcart.fly.dev/health    # -> {"ok":true,...}
+flyctl auth login          # once
+./deploy-fly.sh thincart   # creates app + volume, pins fly.toml, sets secrets, deploys
 ```
 
-Fly terminates TLS and `force_https = true` redirects HTTP→HTTPS. Machines auto-stop when
-idle and auto-start on request (`min_machines_running = 0`); keep it at a single machine.
+The script is safe to re-run for config redeploys. What it does:
+
+- `flyctl apps create` / volume create — idempotent, reused when present.
+- Pins `app = "<app>"` into fly.toml (flyctl errors on a name mismatch).
+- Sets `PLANTCART_SECRET` **only if absent** — re-runs never rotate the JWT
+  secret, so config redeploys don't log the household out.
+- Sets `PLANTCART_CORS=https://<app>.fly.dev` — always derived, never typed.
+- Deploys via the remote builder and curls `/health`.
+
+`fly.toml` ships production defaults: `min_machines_running = 1` (no cold-start
+lag on phone unlocks), LLM off, and `PLANTCART_TRUST_FLY_CLIENT_IP = "1"`
+(**Fly only** — see the warning below).
+
+### Post-launch runbooks (all against the live app)
+
+**Close registration** (after the household is onboarded; invite-code register
+still works — it's the only account-creation path from then on):
+
+```bash
+flyctl secrets set PLANTCART_REGISTRATION=closed -a <app>
+```
+
+**Enable the LLM (recipes / enrichment)** — only AFTER registration is closed
+(open signup + billable LLM = uncapped spend):
+
+```bash
+flyctl secrets set ANTHROPIC_API_KEY=sk-ant-... -a <app>
+# then set PLANTCART_LLM_PROVIDER = "anthropic" in fly.toml and:
+./deploy-fly.sh <app>
+```
+
+**Grant the paid tier** (recipes/advice; list + plant count are always free).
+Operator-set for now — this is the seam billing will later attach to:
+
+```bash
+fly ssh console -a <app> -C "python3 -c \"import sqlite3;c=sqlite3.connect('/data/plantcart.db');c.execute('UPDATE households SET tier=\\\"plus\\\" WHERE invite_code=\\\"<CODE>\\\"');c.commit()\""
+```
+
+**Rotate the JWT secret** (lost phone, leaked token). Deliberate and manual —
+force-logs-out every session by design:
+
+```bash
+flyctl secrets set PLANTCART_SECRET="$(python3 -c 'import secrets;print(secrets.token_urlsafe(48))')" -a <app>
+```
+
+**Break-glass password reset** (there is no email reset flow; registering again
+409s on a duplicate email). Reset the hash directly:
+
+```bash
+fly ssh console -a <app> -C "python3 -c \"
+import sqlite3,sys; sys.path.insert(0,'/srv/server'); import auth
+c=sqlite3.connect('/data/plantcart.db')
+c.execute('UPDATE users SET pw_hash=? WHERE email=?', (auth.hash_password('NEW-PASSWORD'),'user@example.com'))
+c.commit()\""
+```
+
+**Rotate the invite code** — in the app: Settings → "New invite code". The old
+code stops working for join AND for closed-mode register immediately.
+
+**Nightly off-Fly backup** (run from any trusted box; see the systemd units in
+`server/deploy/`): call `python3 /srv/server/backup_db.py --db /data/plantcart.db`
+over `fly ssh console -a <app> -C …`, grep stdout for the final `ARTIFACT:<name>`
+line, `fly sftp get` exactly that file, then verify locally: non-empty, `PRAGMA
+integrity_check` = ok, stamp within 24 h. Judge success from the artifact only —
+never from remote exit codes.
 
 ---
 
-## (b) Any VPS with Docker Compose + Caddy (TLS)
+## (b) Any VPS with Docker Compose + Caddy (fallback)
+
+> ⚠️ **Never set `PLANTCART_TRUST_FLY_CLIENT_IP` here.** Caddy/nginx pass a
+> client-forged `Fly-Client-IP` header straight through — trusting it lets an
+> attacker mint a fresh rate-limit bucket per request (unlimited brute force).
 
 ```bash
-# 1. Copy the repo to the server, then create .env from the template.
 cp .env.example .env
-
-# 2. Put a real secret + API key into .env.
-sed -i "s|^PLANTCART_SECRET=.*|PLANTCART_SECRET=$(python -c 'import secrets;print(secrets.token_urlsafe(48))')|" .env
-#   then edit .env: set ANTHROPIC_API_KEY and PLANTCART_CORS=https://your.domain
-
-# 3. Bring it up (SQLite persists in the named volume `plantcart-data`).
+# edit .env: real PLANTCART_SECRET, PLANTCART_CORS=https://your.domain
 docker compose up -d
-docker compose logs -f plantcart          # watch for startup
-
-# 4. Verify locally (before TLS is in front).
-curl -fsS http://127.0.0.1:8123/health    # -> {"ok":true,...}
 ```
 
-Put Caddy in front for automatic Let's Encrypt TLS (simplest option). Minimal `Caddyfile`:
+Minimal `Caddyfile` (automatic Let's Encrypt):
 
 ```caddyfile
-plantcart.example.com {
+your.domain {
     reverse_proxy 127.0.0.1:8123
 }
 ```
 
-Run Caddy (`caddy run --config ./Caddyfile`, or as a systemd service / its own container).
-It obtains and renews certificates automatically. Point DNS `A`/`AAAA` at the VPS first.
-
-> nginx alternative: `proxy_pass http://127.0.0.1:8123;` inside a `server {}` block, with
-> certs from certbot. Caddy is recommended because auto-TLS needs zero extra steps.
-
-To update: `git pull && docker compose up -d --build`.
+Update: `git pull && docker compose up -d --build`.
 
 ---
 
-## (c) Render.com
+## (c) Render.com (fallback)
 
-1. New **Web Service** → connect the repo → **Runtime: Docker** (Render uses the root `Dockerfile`).
-2. **Instance count: 1** (single SQLite writer — do not increase).
-3. Add a **Disk**: mount path `/data`, size 1 GB. This holds the SQLite DB.
-4. Environment variables:
+Same warning as (b): leave `PLANTCART_TRUST_FLY_CLIENT_IP` unset.
 
-   | Key | Value |
-   |-----|-------|
-   | `PLANTCART_ENV` | `production` |
-   | `PLANTCART_DB` | `/data/plantcart.db` |
-   | `PLANTCART_SECRET` | *(generated secret — mark as secret)* |
-   | `PLANTCART_LLM_PROVIDER` | `anthropic` |
-   | `ANTHROPIC_API_KEY` | `sk-ant-...` *(secret)* |
-   | `PLANTCART_LLM_MODEL` | `claude-haiku-4-5-20251001` |
-   | `PLANTCART_CORS` | `https://your-service.onrender.com` |
-
-5. **Health Check Path:** `/health`.
-6. Deploy. Render provides HTTPS on the `*.onrender.com` domain automatically.
-
-Render sets `$PORT`; the app already listens on 8123 and Render maps to it via the
-exposed port. If you prefer, set `PLANTCART_PORT` to match Render's `$PORT` — but the
-default 8123 works with the Dockerfile's `EXPOSE`.
+1. New **Web Service** → connect repo → Runtime: Docker. **Instance count: 1.**
+2. Disk: mount `/data`, 1 GB.
+3. Env vars: `PLANTCART_ENV=production`, `PLANTCART_DB=/data/plantcart.db`,
+   `PLANTCART_SECRET` (secret), `PLANTCART_CORS=https://<service>.onrender.com`,
+   `PLANTCART_LLM_PROVIDER=none` (flip later with the key, as secrets).
+4. Health check path: `/health`.

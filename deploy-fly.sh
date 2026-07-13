@@ -22,6 +22,11 @@ flyctl auth whoami >/dev/null 2>&1 || { echo "Not logged in. Run: flyctl auth lo
 echo "==> Ensuring app '$APP' exists"
 flyctl apps create "$APP" 2>/dev/null || echo "   (app already exists — reusing)"
 
+# fly.toml's `app` must AGREE with -a: flyctl errors on a mismatch, and the
+# shipped value is a CHANGEME placeholder. sed it in (idempotent).
+sed -i "s/^app = .*/app = \"$APP\"/" fly.toml
+echo "==> fly.toml app pinned to '$APP'"
+
 echo "==> Ensuring persistent volume 'plantcart_data' in $REGION"
 if ! flyctl volumes list -a "$APP" 2>/dev/null | grep -q plantcart_data; then
   flyctl volumes create plantcart_data --size 1 --region "$REGION" -a "$APP" --yes
@@ -29,10 +34,23 @@ else
   echo "   (volume exists — reusing)"
 fi
 
-echo "==> Setting PLANTCART_SECRET (generated, not stored anywhere else)"
-SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
-flyctl secrets set "PLANTCART_SECRET=$SECRET" -a "$APP" >/dev/null
-echo "   secret set."
+# Set the JWT secret ONLY IF ABSENT: regenerating on every run would rotate it
+# on any config redeploy (LLM flip, registration flip) and force-logout every
+# session mid-use. Deliberate rotation (lost phone, leaked token) is a manual
+# runbook step — see DEPLOY.md.
+if flyctl secrets list -a "$APP" 2>/dev/null | grep -q PLANTCART_SECRET; then
+  echo "==> PLANTCART_SECRET already set — keeping it (rotation is manual; see DEPLOY.md)"
+else
+  echo "==> Setting PLANTCART_SECRET (generated, not stored anywhere else)"
+  SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+  flyctl secrets set "PLANTCART_SECRET=$SECRET" -a "$APP" >/dev/null
+  echo "   secret set."
+fi
+
+# CORS derives from the app name — never hardcoded (a mismatched origin makes
+# every browser API call fail after deploy).
+flyctl secrets set "PLANTCART_CORS=https://$APP.fly.dev" -a "$APP" --stage >/dev/null
+echo "==> PLANTCART_CORS=https://$APP.fly.dev (staged; applies with this deploy)"
 
 echo "==> Deploying (remote builder)"
 flyctl deploy -a "$APP" --remote-only --ha=false --yes
@@ -46,6 +64,10 @@ echo
 echo "PlantCart is live at:  $URL"
 echo "Open it, create an account, and share the invite code with your wife."
 echo
-echo "To enable recipes / plant enrichment later:"
+echo "To close registration after the household is set up (invite-code-only from then on):"
+echo "  flyctl secrets set PLANTCART_REGISTRATION=closed -a $APP"
+echo
+echo "To enable recipes / plant enrichment later (ONLY after registration is closed):"
 echo "  1) flyctl secrets set ANTHROPIC_API_KEY=sk-ant-... -a $APP"
 echo "  2) set PLANTCART_LLM_PROVIDER = \"anthropic\" in fly.toml, then: ./deploy-fly.sh $APP"
+echo "     (config-only redeploys are token-safe: the JWT secret is never regenerated)"
