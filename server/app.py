@@ -31,6 +31,7 @@ import catalog
 import cycles
 import db
 import llm
+import plants
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("plantcart")
@@ -423,12 +424,14 @@ async def get_ideas(refresh: int = 0):
     diversity = diversity.get("suggestions") if isinstance(diversity, dict) else None
     if diversity is not None:
         # the LLM sometimes suggests plants just eaten despite the prompt —
-        # enforce "different" deterministically against the 30-day set
+        # enforce "different" deterministically against the 30-day set. Canonicalize
+        # the suggestion first, or a synonym ("capsicum" for an eaten "bell pepper")
+        # walks straight through the filter.
         eaten = set(month)
         diversity = [
             s for s in diversity
             if isinstance(s, dict) and s.get("buy")
-            and str(s.get("plant", "")).lower() not in eaten
+            and not set(plants.normalize([str(s.get("plant", ""))])) & eaten
         ]
     if recipes is None and diversity is None:
         raise HTTPException(503, "LLM unavailable — list and sync are unaffected")

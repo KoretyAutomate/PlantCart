@@ -103,7 +103,8 @@ def test_weekly_plants_union_and_window():
     assert {"soybean", "rice", "wheat"} <= set(week)
     assert "kale" not in week
     state = client.get("/api/state").json()
-    assert state["plants"]["count"] == len(week)
+    # count is WEIGHTED plant points, not len(week) — see plants.WEIGHTS
+    assert state["plants"]["count"] == catalog.weekly_score(appmod.conn)
     assert state["plants"]["target"] == 30
 
 

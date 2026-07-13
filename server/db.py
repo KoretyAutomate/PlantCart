@@ -203,13 +203,24 @@ def state(conn: sqlite3.Connection, now=None) -> dict:
         d["name_en"] = name_en(d.pop("aliases_json"), d["name"])
         items.append(d)
     import catalog
+    import plants as plantvocab
 
     week = catalog.weekly_plants(conn, now)
     return {
         "revision": get_revision(conn),
         "items": items,
         "suggestions": suggestions(conn, now),
-        "plants": {"count": len(week), "target": 30, "week": week},
+        # count is plant points per plants.COUNTING_MODE — currently "agp": a flat
+        # count of distinct plant species (the study's own method, no fractions).
+        # Under "rossi" it becomes fractional (herbs/spices ¼). `weights` carries
+        # any non-1.0 token so the panel can mark it; it is empty under AGP.
+        "plants": {
+            "count": plantvocab.score(week),
+            "target": 30,
+            "week": week,
+            "weights": {t: plantvocab.weight(t) for t in week
+                        if plantvocab.weight(t) != 1.0},
+        },
     }
 
 

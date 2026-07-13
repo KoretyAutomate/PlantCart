@@ -176,6 +176,34 @@ Deterministic, testable with synthetic histories, zero LLM dependency.
   union double-counts. Known undercount: monthly-bought staples (rice, flour)
   fall out of a 7-day purchase window while still being eaten — accepted for
   MVP; if the count feels low, widen to 30 days for `pantry`-category items.
+- **Canonical vocabulary + weighted points (2026-07-12):** "canonical lowercase
+  English token" was too weak a spec — the LLM emitted `capsicum` for one bell
+  pepper and `pepper` for another (double-count), one `pepper` for both capsicum
+  and the black-pepper spice (collision), and `citrus` for lemon *and* lime
+  (collision) while splitting `orange` (inconsistent granularity). The token unit
+  is now the **culinary taxon**: one token per species, except where a species is
+  eaten in two unrelated roles (`bell pepper` vs `chili pepper`, both *Capsicum
+  annuum*). Colour, cultivar, brand and refinement never split a token
+  (green/red/yellow bell pepper → `bell pepper`; white/brown/purple rice →
+  `rice`). `server/plants.py` holds the alias map + context-resolved ambiguous
+  tokens + weights, and is the safety net the flaky local LLM cannot drift past —
+  it normalizes on **write and on read**, so the count is right with the DGX down.
+- **Counting method = AGP, not Rossi (user decision 2026-07-12).** Three systems
+  exist and they disagree: the **American Gut Project** (McDonald et al. 2018 — the
+  study that produced the number 30) is a *plain count*, no fractions, no
+  exclusions (its own survey: a soup of carrot+potato+onion = 3 plants; every grain
+  in multigrain bread counts; herbs, spices and juices each score a full 1).
+  **ZOE/Spector** publish no fractions either. Only **Megan Rossi's "plant points"**
+  has fractions (herbs/spices/garlic/olive oil/tea/coffee = ¼). Rossi keeps the
+  target at 30 while making 30 strictly harder to reach, so its 30 ≠ the study's 30.
+  We take AGP so the **target and the method come from the same source**.
+  `plants.COUNTING_MODE = "agp"` is the single chokepoint; Rossi's weight table is
+  retained and switchable (`= "rossi"`) — both modes are tested.
+  Known trade-off: a flat count is gameable (one processed food with a long
+  ingredient list can donate ~7 points) — accepted, because that is exactly what
+  the study measured.
+  - `Delegation: sub-agent (research + vocabulary + counter); director reviewed,
+    re-ran the suite independently, and reversed the weighting to AGP per user.`
 - **Diversity suggestions (LLM):** "Plants you haven't bought in 30+ days +
   plants that pair with what's already on your list" → tap to add to list.
 - **Recipes (LLM):** on demand ("What can we cook?"), from the last ~10 days of

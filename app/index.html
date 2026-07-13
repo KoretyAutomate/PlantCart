@@ -923,7 +923,12 @@ async function loadIdeas(refresh) {
   wp.innerHTML = (base.plants?.week || [])
     .map(() => '<span class="pchip"></span>').join('') || '<span class="pchip"></span>';
   [...wp.children].forEach((el, i) => {
-    el.textContent = base.plants?.week?.[i] || T().none_yet;
+    const tok = base.plants?.week?.[i];
+    // herbs/spices/garlic/oil/tea/coffee score a fraction of a plant point —
+    // show it, or the chip count won't add up to the header number
+    const w = tok && base.plants?.weights?.[tok];
+    el.textContent = tok ? (w ? `${tok} ·${w === 0.25 ? '¼' : w === 0.5 ? '½' : w}` : tok)
+                         : T().none_yet;
   });
   $('week-title').textContent =
     T().week(base.plants?.count ?? 0, base.plants?.target ?? 30);

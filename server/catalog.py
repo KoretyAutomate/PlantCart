@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 import llm
+import plants
 from db import canonical
 
 log = logging.getLogger("plantcart.catalog")
@@ -38,8 +39,6 @@ CATEGORIES = [
     "frozen", "drinks", "household", "other",
 ]
 
-_TOKEN = re.compile(r"^[a-z][a-z \-]{0,40}$")
-
 
 def _is_variety(source_canon: str, target_names: list[str]) -> bool:
     """Deterministic backstop for the alias merge: True if the new item is a
@@ -55,16 +54,24 @@ def _is_variety(source_canon: str, target_names: list[str]) -> bool:
     return False
 
 
-def _clean_plants(raw) -> list[str] | None:
+def item_context(row) -> str:
+    """The item's own text — what disambiguates a bare LLM token ("pepper" on
+    `bell pepper bag` is a capsicum; on `Amys frozen pizza` it is the spice)."""
+    parts = [row["canonical_name"], row["display_name"]]
+    try:
+        parts += json.loads(row["aliases_json"] or "[]")
+    except (KeyError, IndexError, TypeError, ValueError):
+        pass
+    return " ".join(str(p) for p in parts if p)
+
+
+def _clean_plants(raw, context: str = "") -> list[str] | None:
+    """Raw LLM plant list → canonical vocabulary. The prompt asks for canonical
+    tokens; this is the safety net that makes sure it got them (the local LLM is
+    flaky, and one drifted token silently double-counts the week)."""
     if not isinstance(raw, list):
         return None
-    out = []
-    for p in raw:
-        if isinstance(p, str):
-            tok = p.strip().lower()
-            if _TOKEN.match(tok) and tok not in out:
-                out.append(tok)
-    return out
+    return plants.normalize(raw, context)
 
 
 def enrich_prompt(display_name: str, existing_names: list[str],
@@ -78,14 +85,18 @@ def enrich_prompt(display_name: str, existing_names: list[str],
         f'Grocery item (Japanese or English): "{display_name}".\n'
         f'Existing catalog items: [{listed}]\n'
         f'{ev}'
+        f'{plants.VOCAB_RULES}\n'
         'Reply ONLY JSON: {'
         '"is_real_item": bool — false ONLY if the text looks like a typo or gibberish '
         'rather than a real product (use the web evidence if given; when unsure, true), '
         f'"category": one of {json.dumps(CATEGORIES)}, '
         '"is_edible": bool, '
         '"plants": [the DISTINCT edible plant species a typical serving contains, '
-        'as lowercase English tokens, e.g. curry roux -> ["wheat","turmeric","cumin"], '
-        'milk -> []], '
+        'as canonical tokens per the PLANT TOKEN RULES above. Examples: '
+        'curry roux -> ["wheat","turmeric","cumin","coriander"]; '
+        'green bell pepper -> ["bell pepper"]; frozen pizza -> '
+        '["wheat","tomato","onion","garlic","basil","oregano","black pepper"]; '
+        'lemon -> ["lemon"]; yellow squash -> ["summer squash"]; milk -> []], '
         '"english_name": the common English name for THIS specific item — PRESERVE '
         'brand names and the specific type/variety, never generalize. '
         '"One Mighty Mill bagel" -> "one mighty mill bagel" (NOT "bagel"); '
@@ -131,7 +142,7 @@ async def enrich(conn, write_lock, catalog_id: int) -> bool:
         return False
     verified = 0 if res.get("is_real_item") is False else 1
 
-    plants = _clean_plants(res.get("plants")) or []
+    item_plants = _clean_plants(res.get("plants"), item_context(row)) or []
     category = res.get("category") if res.get("category") in CATEGORIES else "other"
     is_edible = 1 if res.get("is_edible") else 0
     alias_of = res.get("alias_of")
@@ -177,7 +188,7 @@ async def enrich(conn, write_lock, catalog_id: int) -> bool:
             conn.execute(
                 "UPDATE item_catalog SET category=?, is_edible=?, plants_json=?, "
                 "aliases_json=?, verified=?, llm_enriched_at=? WHERE id=?",
-                (category, is_edible, json.dumps(plants),
+                (category, is_edible, json.dumps(item_plants),
                  json.dumps(aliases, ensure_ascii=False), verified, now, row["id"]),
             )
             if not verified:
@@ -202,18 +213,31 @@ async def sweep(conn, write_lock) -> int:
 
 
 def weekly_plants(conn, now=None, window_days: int = 7) -> list[str]:
-    """Distinct plants across purchases in the trailing window (rule-based, no LLM)."""
+    """Distinct canonical plants across purchases in the trailing window.
+
+    Rule-based, no LLM. Tokens are re-canonicalized on read: rows enriched before
+    the vocabulary existed (or by an LLM that ignored it) must not double-count,
+    and the count has to be right even when the DGX is down and no re-enrichment
+    is possible. Zero-weight tokens (sugarcane) are not plants you ate.
+    """
     now = now or datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=window_days)).isoformat(timespec="seconds")
-    plants: set[str] = set()
+    found: set[str] = set()
     for r in conn.execute(
-        """SELECT DISTINCT c.plants_json FROM purchase_events e
-           JOIN item_catalog c ON c.id = e.catalog_id
+        """SELECT DISTINCT c.plants_json, c.canonical_name, c.display_name, c.aliases_json
+           FROM purchase_events e JOIN item_catalog c ON c.id = e.catalog_id
            WHERE e.bought_at >= ? AND c.plants_json IS NOT NULL""",
         (cutoff,),
     ):
-        plants.update(json.loads(r["plants_json"]))
-    return sorted(plants)
+        found.update(
+            plants.normalize(json.loads(r["plants_json"]), item_context(r))
+        )
+    return sorted(plants.countable(found))
+
+
+def weekly_score(conn, now=None, window_days: int = 7) -> float:
+    """Weighted plant points for the trailing window (herbs/spices score ¼)."""
+    return plants.score(weekly_plants(conn, now, window_days))
 
 
 def recent_purchases(conn, days: int = 10) -> list[dict]:
